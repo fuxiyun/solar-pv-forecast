@@ -1,0 +1,64 @@
+[project]
+name = "solar-pv-forecast"
+version = "0.1.0"
+description = "Quarter-hourly national solar PV forecasting pipeline for Germany"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Xiyun Fu" },
+]
+
+dependencies = [
+    # Data processing
+    "polars>=1.0",
+    "pandas>=2.1",
+    "pyarrow>=14.0",
+    "numpy>=1.26",
+
+    # Weather data
+    "openmeteo-requests>=1.2",
+    "requests-cache>=1.1",
+    "retry-requests>=2.0",
+
+    # PV modelling
+    "pvlib>=0.11",
+
+    # ML models
+    "scikit-learn>=1.4",
+    "lightgbm>=4.3",
+
+    # Visualisation
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
+
+    # Utilities
+    "tqdm>=4.66",
+    "loguru>=0.7",
+    "click>=8.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+    "ipykernel>=6.29",
+    "jupyter>=1.0",
+]
+
+[project.scripts]
+solar-forecast = "solar_pv_forecast.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,479 @@
+\documentclass[11pt,a4paper]{article}
+
+% ── Geometry & layout ──────────────────────────────────────────────
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{parskip}            % paragraph spacing instead of indent
+\usepackage{setspace}
+\onehalfspacing
+
+% ── Math & symbols ─────────────────────────────────────────────────
+\usepackage{amsmath,amssymb}
+
+% ── Graphics & tables ──────────────────────────────────────────────
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage[font=small,labelfont=bf]{caption}
+
+% ── Colors & code ──────────────────────────────────────────────────
+\usepackage{multirow}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{listings}
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{gray!8},
+  frame=single,
+  rulecolor=\color{gray!30},
+  breaklines=true,
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  keywordstyle=\color{MidnightBlue},
+  commentstyle=\color{ForestGreen},
+  stringstyle=\color{BrickRed},
+  language=Python,
+  showstringspaces=false,
+}
+
+% ── Headers & footers ─────────────────────────────────────────────
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\textit{Solar PV Forecasting -- Technical Note}}
+\fancyhead[R]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ── Links ──────────────────────────────────────────────────────────
+\usepackage[
+  colorlinks=true,
+  linkcolor=MidnightBlue,
+  citecolor=MidnightBlue,
+  urlcolor=MidnightBlue
+]{hyperref}
+
+% ── Lists ──────────────────────────────────────────────────────────
+\usepackage{enumitem}
+\setlist{nosep,leftmargin=1.5em}
+
+% ── Bibliography ───────────────────────────────────────────────────
+\usepackage[round,sort&compress]{natbib}
+
+% ══════════════════════════════════════════════════════════════════
+\begin{document}
+
+% ── Title ──────────────────────────────────────────────────────────
+\begin{center}
+  {\LARGE\bfseries Quarter-Hourly National Solar PV Forecasting\\
+  for Germany}\\[0.8em]
+  {\large Technical Note}\\[0.6em]
+  {\normalsize Xiyun Fu}\\[0.3em]
+  {\small \today}
+\end{center}
+
+\vspace{0.5em}
+\hrule
+\vspace{1.5em}
+
+% ── Abstract ───────────────────────────────────────────────────────
+\begin{abstract}
+\noindent
+This report describes an end-to-end pipeline for predicting quarter-hourly
+national solar photovoltaic (PV) generation in Germany. The pipeline combines
+publicly available weather reanalysis data (ERA5 via Open-Meteo), a
+capacity-weighted spatial distribution of installed PV across German federal
+states, and realised generation data from the SMARD platform. A synthetic
+national PV proxy is constructed by aggregating surface solar radiation across
+regions weighted by installed capacity. Two forecasting models are evaluated:
+a linear baseline regressing on the synthetic proxy, and a LightGBM model
+incorporating calendar, solar position, and meteorological features. Both are
+validated on a rolling-origin time-aware split using normalised MAE and a
+skill score relative to the baseline. The pipeline targets full-year backfill
+within 45 minutes on a reference VM (8~vCPU, 32~GB RAM) and outputs
+predictions in Parquet format via a single command.
+\end{abstract}
+
+% ── Table of contents (optional, remove if too short) ──────────────
+\tableofcontents
+\vspace{1em}
+
+% ══════════════════════════════════════════════════════════════════
+\section{Introduction}
+\label{sec:intro}
+
+Accurate forecasting of solar PV generation is critical for grid balancing,
+intraday trading, and reserve dimensioning. Germany, with over 80~GW of
+installed PV capacity as of 2024, presents a challenging national-scale
+aggregation problem: generation depends on spatially heterogeneous irradiance
+conditions across diverse latitudes and orientations.
+
+This work addresses the task of predicting quarter-hourly (15-minute)
+national solar PV production for Germany by combining three data layers:
+\begin{enumerate}
+  \item A \textbf{weather/irradiance layer} providing surface solar radiation
+        and meteorological covariates;
+  \item A \textbf{PV spatial distribution layer} capturing the geographic
+        allocation of installed capacity;
+  \item A \textbf{realised generation series} serving as the prediction target.
+\end{enumerate}
+
+The pipeline is designed to run reproducibly on a modest compute budget
+(8~vCPU, 32~GB RAM, no GPU) with a target wall-clock time of approximately
+45~minutes for a full-year backfill. All code, data pipelines, and model
+artefacts are provided in a public repository with a single-command entry
+point (\texttt{make full-run}).
+
+Section~\ref{sec:data} describes data sourcing and engineering decisions.
+Section~\ref{sec:proxy} details the synthetic proxy construction.
+Section~\ref{sec:model} presents the modelling and validation framework.
+Section~\ref{sec:results} reports results. Section~\ref{sec:discussion}
+discusses limitations and next steps.
+
+% ══════════════════════════════════════════════════════════════════
+\section{Data Sourcing \& Engineering}
+\label{sec:data}
+
+\subsection{Data sources considered}
+\label{sec:data:considered}
+
+Table~\ref{tab:datasources} summarises the datasets considered, those
+selected, and the rationale for each decision.
+
+\begin{table}[H]
+\centering
+\caption{Data sources considered and selection rationale.}
+\label{tab:datasources}
+\small
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Layer} & \textbf{Source} & \textbf{Used?} & \textbf{Rationale} \\
+\midrule
+\multirow{3}{*}{Weather}
+  & ERA5 (CDS direct)        & No  & Requires CDS credentials; slow download \\
+  & Open-Meteo Historical    & Yes & Free; ERA5 backend; hourly; no API key \\
+  & DWD ICON / COSMO         & No  & Forecast data, not reanalysis \\
+\midrule
+\multirow{3}{*}{PV spatial}
+  & MaStR (BNetzA)           & No  & Plant-level; complex parsing; overkill \\
+  & OPSD capacity data       & Yes & Aggregated by state; well-documented \\
+  & OSM-derived              & No  & Incomplete coverage \\
+\midrule
+\multirow{3}{*}{Target}
+  & ENTSO-E (entsoe-py)      & No  & Requires API key (3-day wait) \\
+  & SMARD (BNetzA)           & Yes & Direct CSV; 15-min; no registration \\
+  & OPSD time series         & No  & May lag behind most recent year \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Weather / irradiance layer}
+\label{sec:data:weather}
+
+We retrieve hourly ERA5-derived data from the Open-Meteo Historical Weather
+API for a set of representative coordinates across Germany's 16 federal
+states. For each location we request:
+\begin{itemize}
+  \item \textbf{shortwave\_radiation} (GHI, W/m\textsuperscript{2}) --
+        surface incoming solar radiation;
+  \item \textbf{temperature\_2m} (\textdegree C) -- affects PV cell efficiency;
+  \item \textbf{windspeed\_10m} (m/s) -- contributes to convective cooling.
+\end{itemize}
+
+Open-Meteo serves ERA5 reanalysis data at 0.25\textdegree\ spatial resolution
+($\sim$25~km). We select one coordinate per Bundesland, chosen to
+approximate the centroid of the state's PV-dense area, avoiding coastal
+or alpine extremes.
+
+\textbf{Temporal resolution.} ERA5 provides hourly data. We interpolate to
+15-minute resolution using cubic spline interpolation for GHI (preserving
+non-negativity via clipping) and linear interpolation for temperature and
+wind speed.
+
+% TODO: insert figure showing representative coordinates on map
+
+\subsection{PV spatial distribution layer}
+\label{sec:data:pv}
+
+We use aggregated installed PV capacity per German federal state from the
+Open Power System Data (OPSD) platform. This provides a well-documented
+proxy for the spatial distribution of installed capacity without requiring
+plant-level resolution.
+
+The capacity weights are normalised:
+\begin{equation}
+  w_i = \frac{C_i}{\sum_{j \in \mathcal{S}} C_j}
+  \label{eq:weights}
+\end{equation}
+where $C_i$ is the installed PV capacity in state $i$ and $\mathcal{S}$ is
+the set of all states.
+
+% TODO: insert table with per-state capacity and weights
+
+\subsection{Target series}
+\label{sec:data:target}
+
+Realised German solar generation is sourced from SMARD
+(\url{https://smard.de}), operated by the Bundesnetzagentur. The data is
+available at 15-minute resolution in MW and covers generation from all
+four German TSO zones (50Hertz, Amprion, TenneT, TransnetBW) aggregated
+to the national level.
+
+We download data for January--December 2025 (or the latest available
+month). Timestamps are in CET/CEST; we convert to UTC for internal
+consistency.
+
+\subsection{Harmonisation}
+\label{sec:data:harmonise}
+
+All three layers are aligned to a common schema:
+\begin{itemize}
+  \item \textbf{Timestamps}: 15-minute intervals, UTC, timezone-naive
+        \texttt{datetime64[ns]};
+  \item \textbf{Units}: GHI in W/m\textsuperscript{2}, generation in MW,
+        capacity in MW\textsubscript{p};
+  \item \textbf{Missing values}: gaps $<$4 hours are forward-filled;
+        longer gaps are flagged and excluded from training;
+  \item \textbf{Night masking}: periods where solar zenith angle $>$90\textdegree\
+        are set to zero.
+\end{itemize}
+
+Intermediate outputs are persisted as Parquet files partitioned by
+year/month with \texttt{float32} precision where safe. Processing uses
+\texttt{polars} with lazy evaluation to keep peak memory well below 32~GB.
+
+% ══════════════════════════════════════════════════════════════════
+\section{Synthetic Proxy Construction}
+\label{sec:proxy}
+
+The synthetic national PV proxy aggregates regional irradiance into a
+single national time series:
+\begin{equation}
+  P_t^{\text{syn}} = \eta \sum_{i \in \mathcal{S}} \text{GHI}_{i,t} \cdot w_i
+  \label{eq:proxy}
+\end{equation}
+where $\text{GHI}_{i,t}$ is the surface solar radiation at the
+representative coordinate for state $i$ at time $t$, $w_i$ is the
+normalised capacity weight from Eq.~\eqref{eq:weights}, and $\eta$ is
+a scalar efficiency factor fitted by ordinary least squares on the
+training set to minimise the residual against realised generation.
+
+This formulation is intentionally simple. It assumes:
+\begin{enumerate}
+  \item PV generation scales linearly with GHI (ignoring temperature and
+        angle-of-incidence effects);
+  \item One coordinate per state is sufficient to capture regional
+        irradiance variation;
+  \item Capacity is static over the forecast period.
+\end{enumerate}
+
+These simplifications are justified by the scope of this exercise.
+Section~\ref{sec:discussion} discusses how each could be relaxed.
+
+% TODO: insert scatter plot of P_syn vs actual generation
+
+% ══════════════════════════════════════════════════════════════════
+\section{Modelling \& Validation}
+\label{sec:model}
+
+\subsection{Feature engineering}
+\label{sec:model:features}
+
+Beyond the raw synthetic proxy, we engineer the following features:
+\begin{itemize}
+  \item \textbf{Calendar}: hour-of-day, day-of-year (cyclically encoded
+        as sin/cos), weekday indicator;
+  \item \textbf{Solar position}: solar zenith angle, solar azimuth,
+        clear-sky GHI (computed via \texttt{pvlib});
+  \item \textbf{Clear-sky index}: $k_t = \text{GHI}_{\text{actual}} /
+        \text{GHI}_{\text{clearsky}}$, clipped to $[0, 1.5]$;
+  \item \textbf{Meteorological}: temperature, wind speed (national
+        weighted averages);
+  \item \textbf{Lags}: 1-day and 7-day lagged actual generation
+        (only for non-operational forecasting; discussed as leakage
+        risk in Section~\ref{sec:model:validation}).
+\end{itemize}
+
+\subsection{Baseline model}
+\label{sec:model:baseline}
+
+The baseline is a ridge regression:
+\begin{equation}
+  \hat{P}_t = \beta_0 + \beta_1 P_t^{\text{syn}} + \beta_2 k_t + \varepsilon_t
+\end{equation}
+fitted on the training fold. This provides a transparent, explainable
+reference point.
+
+\subsection{Candidate model}
+\label{sec:model:candidate}
+
+The candidate model is a \textbf{LightGBM} gradient-boosted tree
+regressor using all engineered features. Key hyperparameters:
+\begin{itemize}
+  \item \texttt{num\_leaves}: 63
+  \item \texttt{learning\_rate}: 0.05
+  \item \texttt{n\_estimators}: 500 (with early stopping, patience 50)
+  \item \texttt{min\_child\_samples}: 50
+  \item \texttt{subsample}: 0.8
+\end{itemize}
+
+LightGBM is chosen for its computational efficiency (compatible with the
+no-GPU constraint), native handling of missing values, and strong
+empirical performance on tabular regression tasks.
+
+\subsection{Validation setup}
+\label{sec:model:validation}
+
+We use a \textbf{rolling-origin} (expanding window) cross-validation
+with monthly test blocks:
+\begin{itemize}
+  \item Initial training window: January--June 2025;
+  \item Test blocks: each subsequent month evaluated independently;
+  \item No overlap between training and test.
+\end{itemize}
+
+\textbf{Primary metric}: normalised MAE (nMAE), defined as:
+\begin{equation}
+  \text{nMAE} = \frac{\text{MAE}}{\overline{P}_{\text{actual}}}
+  = \frac{\frac{1}{N}\sum_t |P_t - \hat{P}_t|}{\frac{1}{N}\sum_t P_t}
+\end{equation}
+where the denominator is the mean actual generation over the test period
+(excluding nighttime zeros).
+
+\textbf{Secondary metric}: skill score relative to the baseline:
+\begin{equation}
+  \text{SS} = 1 - \frac{\text{MAE}_{\text{candidate}}}{\text{MAE}_{\text{baseline}}}
+\end{equation}
+
+\textbf{Leakage controls}:
+\begin{itemize}
+  \item No future weather data in features (all features are concurrent
+        or lagged);
+  \item Lag features use only realised values from $\geq$24 hours prior;
+  \item Train/test split is strictly temporal (no shuffling).
+\end{itemize}
+
+% ══════════════════════════════════════════════════════════════════
+\section{Results}
+\label{sec:results}
+
+% TODO: fill in after running experiments
+
+\begin{table}[H]
+\centering
+\caption{Out-of-sample performance (rolling-origin validation).}
+\label{tab:results}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Model}   & \textbf{MAE (MW)} & \textbf{nMAE (\%)} & \textbf{Skill Score} \\
+\midrule
+Baseline (ridge)  & --   & --  & --    \\
+LightGBM          & --   & --  & --    \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% TODO: insert time-series plot of predictions vs actuals
+% TODO: insert residual analysis (diurnal pattern, seasonal)
+% TODO: insert feature importance plot for LightGBM
+
+% ══════════════════════════════════════════════════════════════════
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Limitations}
+
+\begin{enumerate}
+  \item \textbf{Single coordinate per state}: sub-state irradiance
+        variability is not captured. Larger states (e.g.\ Bavaria,
+        North Rhine-Westphalia) would benefit from multiple sample
+        points.
+  \item \textbf{Hourly weather interpolated to 15-min}: the weather
+        layer's native resolution is hourly, introducing smoothing at
+        the quarter-hourly target. Satellite-derived irradiance
+        (e.g.\ Open-Meteo Satellite API at 15-min native) would
+        improve fidelity.
+  \item \textbf{Static capacity weights}: installed PV capacity grows
+        year-on-year. Our weights are a snapshot and do not reflect
+        intra-year commissioning.
+  \item \textbf{No temperature correction}: cell temperature effects on
+        efficiency are ignored in the proxy. A simple temperature
+        coefficient ($\sim -0.4$\%/\textdegree C above 25\textdegree C)
+        could improve accuracy.
+  \item \textbf{No curtailment modelling}: periods of grid curtailment
+        reduce actual generation below physical potential.
+\end{enumerate}
+
+\subsection{Next steps}
+
+\begin{itemize}
+  \item Replace single-point weather with gridded ERA5 or satellite data
+        and use \texttt{atlite} for physically-informed PV conversion;
+  \item Incorporate \texttt{pvlib} temperature models for cell-level
+        efficiency;
+  \item Add probabilistic forecasting (quantile regression via LightGBM)
+        for uncertainty estimation;
+  \item Explore temporal models (LSTM, TiDE) if longer historical data
+        is available;
+  \item Integrate real-time data feeds for operational forecasting.
+\end{itemize}
+
+% ══════════════════════════════════════════════════════════════════
+\section{Reproducibility}
+\label{sec:reproducibility}
+
+The full pipeline is available at:
+\begin{center}
+  \url{https://github.com/[username]/solar-pv-forecast}
+\end{center}
+
+\textbf{Environment}: Python $\geq$3.11, managed via \texttt{uv}. All
+dependencies are locked in \texttt{pyproject.toml}.
+
+\textbf{Single-command execution}:
+\begin{lstlisting}[language=bash]
+make full-run  # produces predictions.parquet + runtime log
+\end{lstlisting}
+
+\textbf{Runtime}: approximately [XX] minutes on the reference VM
+(8~vCPU, 32~GB RAM). Peak memory: [XX]~GB.
+
+% ══════════════════════════════════════════════════════════════════
+\section{Data Documentation}
+\label{sec:datadoc}
+
+\begin{table}[H]
+\centering
+\caption{Variable definitions and units.}
+\label{tab:variables}
+\small
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Variable} & \textbf{Unit} & \textbf{Resolution} & \textbf{Source} \\
+\midrule
+\texttt{ghi\_wm2}          & W/m\textsuperscript{2} & 15-min (interp.)  & Open-Meteo \\
+\texttt{temperature\_2m}   & \textdegree C          & 15-min (interp.)  & Open-Meteo \\
+\texttt{windspeed\_10m}    & m/s                    & 15-min (interp.)  & Open-Meteo \\
+\texttt{actual\_solar\_mw} & MW                     & 15-min (native)   & SMARD \\
+\texttt{proxy\_solar\_mw}  & MW                     & 15-min (computed) & Derived \\
+\texttt{solar\_zenith}     & degrees                & 15-min (computed) & pvlib \\
+\texttt{clearsky\_ghi}     & W/m\textsuperscript{2} & 15-min (computed) & pvlib \\
+\texttt{clearsky\_index}   & dimensionless          & 15-min (computed) & Derived \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Coordinate reference system}: WGS84 (EPSG:4326) for all
+geographic coordinates.
+
+\textbf{Resampling}: hourly $\rightarrow$ 15-min via cubic spline (GHI)
+and linear interpolation (temperature, wind). Nighttime GHI clamped to
+zero.
+
+\textbf{Storage format}: Apache Parquet, partitioned by year/month,
+\texttt{float32} for weather variables, \texttt{float64} for generation.
+
+% ══════════════════════════════════════════════════════════════════
+
+% Uncomment when references are ready:
+% \bibliographystyle{abbrvnat}
+% \bibliography{references}
+
+\end{document}

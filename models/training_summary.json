@@ -1,0 +1,15 @@
+{
+  "baseline": {
+    "model_name": "baseline_ridge",
+    "mae_train": 442.4818115234375,
+    "mae_test": 408.8185119628906,
+    "nmae_test": 0.5761104226112366
+  },
+  "lightgbm": {
+    "model_name": "lightgbm",
+    "mae_train": 128.01695968817305,
+    "mae_test": 357.096096544806,
+    "nmae_test": 0.5032227506094629
+  },
+  "skill_score": 0.12651681346264376
+}
