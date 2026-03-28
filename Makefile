@@ -1,4 +1,4 @@
-.PHONY: full-run install data proxy train evaluate report clean help
+.PHONY: full-run install data proxy train evaluate dashboard report clean help
 
 # ── Configuration ───────────────────────────────────────────────
 PYTHON   := python
@@ -47,7 +47,11 @@ train:
 evaluate:
 	$(PYTHON) -m solar_pv_forecast.model.evaluate
 
-# ── Phase 3: Report compilation ─────────────────────────────────
+# ── Phase 3: Dashboard ──────────────────────────────────────────
+dashboard: install
+	streamlit run src/solar_pv_forecast/dashboard.py
+
+# ── Phase 4: Report compilation ─────────────────────────────────
 report:
 	cd report && pdflatex -interaction=nonstopmode technical_note.tex \
 		&& pdflatex -interaction=nonstopmode technical_note.tex
@@ -67,5 +71,6 @@ help:
 	@echo "  make proxy       Phase 1.5: build synthetic PV proxy"
 	@echo "  make train       Phase 2: train baseline + LightGBM models"
 	@echo "  make evaluate    Phase 2: evaluate models, produce predictions.parquet"
-	@echo "  make report      Phase 3: compile LaTeX report"
+	@echo "  make dashboard   Phase 3: launch interactive Streamlit dashboard"
+	@echo "  make report      Phase 4: compile LaTeX report"
 	@echo "  make clean       Remove intermediate files"

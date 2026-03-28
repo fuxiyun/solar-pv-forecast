@@ -17,10 +17,10 @@ from solar_pv_forecast.config import RAW_DIR, START_DATE, END_DATE
 from solar_pv_forecast.utils import log_step, setup_logger
 
 # SMARD API configuration
-# Filter 4069 = Solar generation
+# Filter 4068 = Solar generation
 # Region DE = Germany total
 SMARD_BASE_URL = "https://www.smard.de/app/chart_data"
-SMARD_FILTER = 4069        # Realised solar generation
+SMARD_FILTER = 4068        # Realised solar generation
 SMARD_REGION = "DE"
 SMARD_RESOLUTION = "quarterhour"
 
