@@ -40,6 +40,7 @@ from solar_pv_forecast.model.train import (
     predict_baseline,
     predict_lightgbm,
 )
+from solar_pv_forecast.model.tune import run_optuna
 from solar_pv_forecast.utils import log_step, setup_logger
 
 
@@ -175,8 +176,15 @@ def main():
     with log_step("Build multi-horizon data"):
         mh = build_multihorizon_data(df)
 
+    with log_step("Optuna HP tuning on 2024"):
+        tuned_params = run_optuna(mh)
+        # Save tuned params
+        with open(MODEL_DIR / "tuned_lgbm_params.json", "w") as f:
+            json.dump(tuned_params, f, indent=2)
+        logger.info(f"  Tuned params saved → {MODEL_DIR / 'tuned_lgbm_params.json'}")
+
     with log_step("Walk-forward evaluation (12 rounds)"):
-        preds = walk_forward_train_predict(mh)
+        preds = walk_forward_train_predict(mh, lgbm_params=tuned_params)
 
     with log_step("Save predictions"):
         preds.to_parquet(
@@ -242,6 +250,7 @@ def main():
         "retrain_benefit_vs_frozen": float(retrain_benefit),
         "n_rounds": WALK_FORWARD_N_ROUNDS,
         "forecast_horizon_steps": FORECAST_HORIZON_STEPS,
+        "tuned_lgbm_params": tuned_params,
     }
     with open(MODEL_DIR / "walk_forward_summary.json", "w") as f:
         json.dump(summary, f, indent=2)

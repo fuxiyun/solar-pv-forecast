@@ -21,11 +21,14 @@ install:
 	@echo "[✓] Environment ready."
 
 # ── Phase 1: Data sourcing & engineering ────────────────────────
-data: data-weather data-target data-pv data-harmonise
+data: data-weather data-nwp data-target data-pv data-harmonise
 	@echo "[✓] Phase 1 complete: all data sourced and harmonised."
 
 data-weather:
 	$(PYTHON) -m solar_pv_forecast.data.fetch_weather
+
+data-nwp:
+	$(PYTHON) -m solar_pv_forecast.data.fetch_nwp
 
 data-target:
 	$(PYTHON) -m solar_pv_forecast.data.fetch_target
@@ -43,6 +46,9 @@ proxy:
 # ── Phase 2: Modelling ──────────────────────────────────────────
 train:
 	$(PYTHON) -m solar_pv_forecast.model.train
+
+tune:
+	$(PYTHON) -m solar_pv_forecast.model.tune
 
 walk-forward:
 	$(PYTHON) -m solar_pv_forecast.model.walk_forward

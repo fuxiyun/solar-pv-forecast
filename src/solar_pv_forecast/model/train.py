@@ -52,16 +52,27 @@ TARGET_DETERMINISTIC_FEATURES = [
     "month",
 ]
 
+# Target NWP features: ICON-D2 forecast for T+h, issued before T
+# These are legitimate target features because the NWP model run
+# was completed hours before prediction time T.
+TARGET_NWP_FEATURES = [
+    "nwp_ghi_wm2_national",
+    "nwp_temperature_2m_national",
+    "nwp_cloud_cover_national",
+]
+
 TARGET = "actual_solar_mw"
 
 # Combined feature list used for model training (built by build_multihorizon_data)
 BASELINE_FEATURES = [
     "proxy_solar_mw", "clearsky_index", "forecast_horizon",
     "target_clearsky_ghi", "target_solar_zenith",
+    "target_nwp_ghi_wm2_national",
 ]
 CANDIDATE_FEATURES = (
     ORIGIN_FEATURES
     + [f"target_{f}" for f in TARGET_DETERMINISTIC_FEATURES]
+    + [f"target_{f}" for f in TARGET_NWP_FEATURES]
     + ["forecast_horizon"]
 )
 
@@ -83,6 +94,7 @@ def build_multihorizon_data(df: pd.DataFrame) -> pd.DataFrame:
     n = len(df)
     origin_cols = [c for c in ORIGIN_FEATURES if c in df.columns]
     target_det_cols = [c for c in TARGET_DETERMINISTIC_FEATURES if c in df.columns]
+    target_nwp_cols = [c for c in TARGET_NWP_FEATURES if c in df.columns]
 
     chunks = []
     for h in range(1, FORECAST_HORIZON_STEPS + 1):
@@ -95,10 +107,14 @@ def build_multihorizon_data(df: pd.DataFrame) -> pd.DataFrame:
         target_det = df[target_det_cols].iloc[h:].reset_index(drop=True)
         target_det.columns = [f"target_{c}" for c in target_det.columns]
 
+        # Target NWP features from row T+h (forecast issued before T)
+        target_nwp = df[target_nwp_cols].iloc[h:].reset_index(drop=True)
+        target_nwp.columns = [f"target_{c}" for c in target_nwp.columns]
+
         # Target value and timestamp from row T+h
         target_val = df[[TARGET, "timestamp"]].iloc[h:].reset_index(drop=True)
 
-        chunk = pd.concat([origin, target_det, target_val], axis=1)
+        chunk = pd.concat([origin, target_det, target_nwp, target_val], axis=1)
         chunk["forecast_horizon"] = np.int8(h)
         chunk["origin_timestamp"] = df["timestamp"].values[:n_rows]
 

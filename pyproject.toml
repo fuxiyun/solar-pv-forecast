@@ -27,6 +27,7 @@ dependencies = [
     # ML models
     "scikit-learn>=1.4",
     "lightgbm>=4.3",
+    "optuna>=3.6",
 
     # Visualisation
     "matplotlib>=3.8",

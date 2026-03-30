@@ -23,8 +23,11 @@ def run_all():
     from solar_pv_forecast.model.walk_forward import main as walk_forward
     from solar_pv_forecast.model.evaluate import main as evaluate
 
+    from solar_pv_forecast.data.fetch_nwp import main as fetch_nwp
+
     with log_step("Full pipeline"):
         fetch_weather()
+        fetch_nwp()
         fetch_target()
         fetch_pv()
         harmonise()

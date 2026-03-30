@@ -6,12 +6,10 @@ joins capacity weights, and persists as Parquet.
 Run:  python -m solar_pv_forecast.data.harmonise
 """
 
-import numpy as np
 import pandas as pd
 from loguru import logger
 
 from solar_pv_forecast.config import (
-    GERMAN_STATES,
     INTERIM_DIR,
     PROCESSED_DIR,
     RAW_DIR,
@@ -71,7 +69,6 @@ def build_weighted_national_weather(
 
     # Weighted average per timestamp
     weather_vars = ["ghi_wm2", "temperature_2m", "wind_speed_10m"]
-    agg = {}
     for var in weather_vars:
         merged[f"{var}_weighted"] = merged[var] * merged["weight"]
 
@@ -95,6 +92,36 @@ def build_weighted_national_weather(
 
     result = national.merge(ghi_wide, on="timestamp", how="left")
     return result
+
+
+def build_weighted_national_nwp(
+    nwp_15m: pd.DataFrame,
+    capacity: pd.DataFrame,
+) -> pd.DataFrame:
+    """Compute capacity-weighted national averages of NWP forecast variables.
+
+    NWP data is already at 15-min resolution (ICON-D2 native), so no
+    interpolation is needed.
+    """
+    merged = nwp_15m.merge(
+        capacity[["state", "weight"]],
+        on="state",
+        how="left",
+    )
+
+    nwp_vars = ["nwp_ghi_wm2", "nwp_temperature_2m", "nwp_cloud_cover"]
+    nwp_vars = [v for v in nwp_vars if v in merged.columns]
+
+    for var in nwp_vars:
+        merged[f"{var}_weighted"] = merged[var] * merged["weight"]
+
+    national = (
+        merged.groupby("timestamp")
+        .agg({f"{v}_weighted": "sum" for v in nwp_vars})
+        .rename(columns={f"{v}_weighted": f"{v}_national" for v in nwp_vars})
+        .reset_index()
+    )
+    return national
 
 
 def main():
@@ -124,9 +151,26 @@ def main():
         national = build_weighted_national_weather(weather_15m, capacity)
         logger.info(f"  National weather: {len(national):,} timestamps")
 
+    # ── Load and merge NWP forecast data (if available) ──────────
+    nwp_path = RAW_DIR / "nwp_icon_d2_15min.parquet"
+    nwp_national = None
+    if nwp_path.exists():
+        with log_step("Build national weighted NWP forecasts"):
+            nwp = pd.read_parquet(nwp_path)
+            nwp["timestamp"] = pd.to_datetime(nwp["timestamp"])
+            logger.info(f"  NWP raw: {len(nwp):,} rows")
+            nwp_national = build_weighted_national_nwp(nwp, capacity)
+            logger.info(f"  NWP national: {len(nwp_national):,} timestamps")
+    else:
+        logger.warning(f"  NWP data not found at {nwp_path}, skipping NWP features")
+
     # ── Join with target ────────────────────────────────────────
     with log_step("Join weather + target → modelling table"):
         modelling = national.merge(target, on="timestamp", how="inner")
+
+        # Merge NWP if available
+        if nwp_national is not None:
+            modelling = modelling.merge(nwp_national, on="timestamp", how="left")
 
         # Handle missing values: forward-fill gaps < 4 hours
         gap_limit = 4 * 4  # 4 hours × 4 intervals/hour = 16 intervals
@@ -136,7 +180,7 @@ def main():
 
         # Drop rows still missing
         n_before = len(modelling)
-        modelling = modelling.dropna()
+        modelling = modelling.dropna(how="any") 
         n_dropped = n_before - len(modelling)
         if n_dropped > 0:
             logger.warning(f"  Dropped {n_dropped} rows with remaining NaN")

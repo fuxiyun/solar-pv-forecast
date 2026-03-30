@@ -51,6 +51,15 @@ WEATHER_VARIABLES = [
     "relative_humidity_2m",
 ]
 
+# ── Open-Meteo NWP Forecast API (ICON-D2) ─────────────────────
+OPENMETEO_FORECAST_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
+NWP_MODEL = "icon_d2"
+NWP_VARIABLES_15MIN = [
+    "shortwave_radiation",
+    "temperature_2m",
+    "cloud_cover",
+]
+
 # ── PV capacity by Bundesland (MWp, approximate 2024 values) ───
 # Source: Bundesnetzagentur / OPSD. Will be updated from live data
 # if available; these serve as fallback.
@@ -81,6 +90,11 @@ FORECAST_STEP_MINUTES = 15
 WALK_FORWARD_TEST_YEAR = 2025
 WALK_FORWARD_N_ROUNDS = 12
 EARLY_STOP_VAL_MONTHS = 1     # last N months of train window for early stopping
+
+# ── Optuna HP tuning ───────────────────────────────────────────
+OPTUNA_N_TRIALS = 30
+OPTUNA_CV_FOLDS = 3           # rolling-origin CV folds within 2024
+OPTUNA_TIMEOUT_SEC = 300      # 5-minute hard timeout
 
 # ── Model configuration ─────────────────────────────────────────
 TRAIN_END_DATE = "2024-12-31"  # train on 2024, test on 2025
