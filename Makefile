@@ -1,4 +1,4 @@
-.PHONY: full-run install data proxy train evaluate dashboard report clean help
+.PHONY: full-run install data proxy train walk-forward evaluate dashboard report clean help
 
 # ── Configuration ───────────────────────────────────────────────
 PYTHON   := python
@@ -8,7 +8,7 @@ OUT_DIR  := output
 # ══════════════════════════════════════════════════════════════════
 # Main entry point: run entire pipeline end-to-end
 # ══════════════════════════════════════════════════════════════════
-full-run: install data proxy train evaluate
+full-run: install data proxy walk-forward evaluate dashboard
 	@echo "══════════════════════════════════════════════"
 	@echo "  Pipeline complete."
 	@echo "  Predictions:  $(OUT_DIR)/predictions.parquet"
@@ -44,6 +44,9 @@ proxy:
 train:
 	$(PYTHON) -m solar_pv_forecast.model.train
 
+walk-forward:
+	$(PYTHON) -m solar_pv_forecast.model.walk_forward
+
 evaluate:
 	$(PYTHON) -m solar_pv_forecast.model.evaluate
 
@@ -65,12 +68,12 @@ clean:
 
 help:
 	@echo "Usage:"
-	@echo "  make full-run    Run entire pipeline (data → proxy → train → evaluate)"
-	@echo "  make install     Set up Python environment with uv"
-	@echo "  make data        Phase 1: fetch and harmonise all data"
-	@echo "  make proxy       Phase 1.5: build synthetic PV proxy"
-	@echo "  make train       Phase 2: train baseline + LightGBM models"
-	@echo "  make evaluate    Phase 2: evaluate models, produce predictions.parquet"
-	@echo "  make dashboard   Phase 3: launch interactive Streamlit dashboard"
-	@echo "  make report      Phase 4: compile LaTeX report"
+	@echo "  make full-run      Run entire pipeline (data → proxy → walk-forward → evaluate)"
+	@echo "  make install       Set up Python environment with uv"
+	@echo "  make data          Phase 1: fetch and harmonise all data"
+	@echo "  make proxy         Phase 1.5: build synthetic PV proxy"
+	@echo "  make train         Phase 2a: single-split train (no walk-forward)"
+	@echo "  make walk-forward  Phase 2b: 12-round monthly walk-forward evaluation"
+	@echo "  make evaluate      Phase 2c: evaluate walk-forward predictions"
+	@echo "  make report      Phase 3: compile LaTeX report"
 	@echo "  make clean       Remove intermediate files"

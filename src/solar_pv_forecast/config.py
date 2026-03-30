@@ -16,8 +16,7 @@ for d in [RAW_DIR, INTERIM_DIR, PROCESSED_DIR, OUTPUT_DIR, MODEL_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 # ── Temporal scope ──────────────────────────────────────────────
-YEAR = 2025
-START_DATE = "2025-01-01"
+START_DATE = "2024-01-01"
 END_DATE = "2025-12-31"  # will be clipped to available data
 
 # ── Weather data: representative coordinates per Bundesland ─────
@@ -74,8 +73,17 @@ PV_CAPACITY_MWP = {
     "Bremen":                      100,
 }
 
+# ── Forecast configuration ──────────────────────────────────────
+FORECAST_HORIZON_STEPS = 16   # 4 hours ahead at 15-min resolution
+FORECAST_STEP_MINUTES = 15
+
+# ── Walk-forward configuration ─────────────────────────────────
+WALK_FORWARD_TEST_YEAR = 2025
+WALK_FORWARD_N_ROUNDS = 12
+EARLY_STOP_VAL_MONTHS = 1     # last N months of train window for early stopping
+
 # ── Model configuration ─────────────────────────────────────────
-TRAIN_END_MONTH = 6          # train on Jan–Jun, test on subsequent months
+TRAIN_END_DATE = "2024-12-31"  # train on 2024, test on 2025
 LIGHTGBM_PARAMS = {
     "objective": "regression",
     "metric": "mae",

@@ -15,7 +15,7 @@ from sklearn.linear_model import LinearRegression
 from solar_pv_forecast.config import (
     PV_CAPACITY_MWP,
     PROCESSED_DIR,
-    TRAIN_END_MONTH,
+    TRAIN_END_DATE,
 )
 from solar_pv_forecast.utils import log_step, setup_logger
 
@@ -70,7 +70,7 @@ def main():
         df["proxy_raw"] = proxy_raw.astype("float32")
 
         # Define train mask
-        train_mask = df["timestamp"].dt.month <= TRAIN_END_MONTH
+        train_mask = df["timestamp"] <= TRAIN_END_DATE
 
         # Fit scaling factor
         eta = fit_scaling_factor(

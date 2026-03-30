@@ -20,7 +20,7 @@ def run_all():
     from solar_pv_forecast.data.fetch_pv_capacity import main as fetch_pv
     from solar_pv_forecast.data.harmonise import main as harmonise
     from solar_pv_forecast.proxy.build_proxy import main as build_proxy
-    from solar_pv_forecast.model.train import main as train
+    from solar_pv_forecast.model.walk_forward import main as walk_forward
     from solar_pv_forecast.model.evaluate import main as evaluate
 
     with log_step("Full pipeline"):
@@ -29,7 +29,7 @@ def run_all():
         fetch_pv()
         harmonise()
         build_proxy()
-        train()
+        walk_forward()
         evaluate()
 
     logger.info("Pipeline complete. See output/ for results.")
