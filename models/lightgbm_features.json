@@ -1,1 +1,1 @@
-["proxy_solar_mw", "ghi_wm2_national", "temperature_2m_national", "wind_speed_10m_national", "clearsky_index", "clearsky_ghi", "solar_zenith", "hour_sin", "hour_cos", "doy_sin", "doy_cos", "month", "actual_lag_1d", "actual_lag_7d"]
+["proxy_solar_mw", "ghi_wm2_national", "temperature_2m_national", "wind_speed_10m_national", "clearsky_index", "clearsky_ghi", "solar_zenith", "hour_sin", "hour_cos", "doy_sin", "doy_cos", "month", "actual_lag_1d", "actual_lag_7d", "forecast_horizon"]

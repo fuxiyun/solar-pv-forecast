@@ -1,15 +1,16 @@
 {
   "baseline": {
     "model_name": "baseline_ridge",
-    "mae_train": 518.611083984375,
-    "mae_test": 405.56500244140625,
-    "nmae_test": 0.22020715475082397
+    "mae_train": 383.2726745605469,
+    "mae_test": 459.4368591308594,
+    "nmae_test": 0.21856151521205902
   },
   "lightgbm": {
     "model_name": "lightgbm",
-    "mae_train": 102.10761352210122,
-    "mae_test": 199.0448164132427,
-    "nmae_test": 0.10807415142882186
+    "mae_train": 90.62669948133062,
+    "mae_test": 271.28319214405593,
+    "nmae_test": 0.12905378774699441
   },
-  "skill_score": 0.509215994439758
+  "skill_score": 0.40953106666875516,
+  "forecast_horizon_steps": 16
 }

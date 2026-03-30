@@ -40,6 +40,7 @@ def fetch_smard_index() -> list[int]:
     resp = requests.get(url, timeout=30)
     resp.raise_for_status()
     data = resp.json()
+
     return data["timestamps"]
 
 

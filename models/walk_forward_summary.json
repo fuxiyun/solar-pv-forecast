@@ -1,0 +1,24 @@
+{
+  "overall_nmae_baseline": 0.14123500883579254,
+  "overall_nmae_lightgbm": 0.12065954036049743,
+  "overall_nmae_frozen_lightgbm": 0.12565044748562418,
+  "skill_score_vs_baseline": 0.1456824950477913,
+  "retrain_benefit_vs_frozen": 0.039720567853112954,
+  "n_rounds": 12,
+  "forecast_horizon_steps": 16,
+  "tuned_lgbm_params": {
+    "objective": "regression",
+    "metric": "mae",
+    "verbosity": -1,
+    "num_leaves": 53,
+    "learning_rate": 0.014158464472388848,
+    "n_estimators": 800,
+    "min_child_samples": 32,
+    "subsample": 0.5319105564584845,
+    "subsample_freq": 1,
+    "colsample_bytree": 0.7290250717797375,
+    "reg_alpha": 1.5708095637106323,
+    "reg_lambda": 8.992742336956068,
+    "random_state": 42
+  }
+}
