@@ -235,6 +235,76 @@ def plot_predictions_sample(df: pd.DataFrame, out_dir):
     logger.info(f"  Saved sample day plot → {out_dir / 'predictions_sample_day.png'}")
 
 
+# ── Bias analysis (month × hour) ─────────────────────────────
+def compute_bias_analysis(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute mean error (pred − actual) by month and hour.
+
+    Positive = overprediction, negative = underprediction.
+    Only includes daytime hours where mean actual > 50 MW.
+    """
+    df = df.copy()
+    df["hour"] = df["timestamp"].dt.hour
+    df["month"] = df["timestamp"].dt.month
+    df["error"] = df["pred_lightgbm"] - df["actual_solar_mw"]
+
+    bias = df.groupby(["month", "hour"]).agg(
+        mean_error=("error", "mean"),
+        mean_actual=("actual_solar_mw", "mean"),
+        mae=("error", lambda x: x.abs().mean()),
+        count=("error", "size"),
+    ).reset_index()
+
+    # Relative bias (% of mean actual) — only where generation is meaningful
+    bias["bias_pct"] = np.where(
+        bias["mean_actual"] > 50,
+        bias["mean_error"] / bias["mean_actual"] * 100,
+        np.nan,
+    )
+    return bias
+
+
+def plot_bias_heatmap(bias: pd.DataFrame, out_dir) -> None:
+    """Month × hour heatmap of systematic bias (% of mean actual)."""
+    pivot = bias.pivot(index="month", columns="hour", values="bias_pct")
+
+    fig, ax = plt.subplots(figsize=(14, 5))
+    vmax = max(abs(pivot.min().min()), abs(pivot.max().max()), 20)
+    im = ax.pcolormesh(
+        pivot.columns, pivot.index, pivot.values,
+        cmap="RdBu_r", vmin=-vmax, vmax=vmax, shading="auto",
+    )
+    cbar = fig.colorbar(im, ax=ax, label="Bias (% of mean actual)")
+    ax.set_xlabel("Hour of day (UTC)")
+    ax.set_ylabel("Month")
+    ax.set_yticks(range(1, 13))
+    ax.set_yticklabels([
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ])
+    ax.set_xticks(range(0, 24, 2))
+    ax.set_title("Systematic bias by month and hour (red = overprediction, blue = underprediction)")
+    plt.tight_layout()
+    fig.savefig(out_dir / "bias_month_hour.png", dpi=150)
+    plt.close()
+    logger.info(f"  Saved bias heatmap → {out_dir / 'bias_month_hour.png'}")
+
+
+def log_bias_extremes(bias: pd.DataFrame) -> None:
+    """Log the most biased month/hour combinations."""
+    valid = bias[bias["bias_pct"].notna()].copy()
+    valid["abs_bias_pct"] = valid["bias_pct"].abs()
+
+    worst = valid.nlargest(10, "abs_bias_pct")
+    logger.info("  Worst systematic biases (month, hour → bias %):")
+    for _, row in worst.iterrows():
+        direction = "over" if row["mean_error"] > 0 else "under"
+        logger.info(
+            f"    Month {int(row['month']):2d}, hour {int(row['hour']):2d}: "
+            f"{direction}predicts by {abs(row['bias_pct']):+.1f}% "
+            f"(mean actual: {row['mean_actual']:.0f} MW, n={int(row['count'])})"
+        )
+
+
 # ── Feature importance ────────────────────────────────────────
 def _load_model_and_features():
     """Load saved LightGBM model and its feature list.
@@ -484,6 +554,12 @@ def main():
     with log_step("Compute time-of-day metrics"):
         tod = compute_tod_metrics(df)
         tod.to_csv(OUTPUT_DIR / "tod_metrics.csv", index=False)
+
+    with log_step("Bias analysis (month × hour)"):
+        bias = compute_bias_analysis(df)
+        bias.to_csv(OUTPUT_DIR / "bias_month_hour.csv", index=False)
+        plot_bias_heatmap(bias, OUTPUT_DIR)
+        log_bias_extremes(bias)
 
     with log_step("Feature importance analysis"):
         model, features = _load_model_and_features()

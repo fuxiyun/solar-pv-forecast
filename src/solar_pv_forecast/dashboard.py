@@ -28,6 +28,7 @@ MONTHLY_METRICS = ROOT / "output" / "monthly_metrics.csv"
 HORIZON_METRICS = ROOT / "output" / "horizon_metrics.csv"
 TOD_METRICS     = ROOT / "output" / "tod_metrics.csv"
 EVAL_SUMMARY    = ROOT / "output" / "evaluation_summary.json"
+BIAS_CSV        = ROOT / "output" / "bias_month_hour.csv"
 
 # ── Colours ────────────────────────────────────────────────────────────────
 C_ACTUAL   = "#2C2C2C"
@@ -204,7 +205,7 @@ else:
 
 tabs = ["Raw Data"]
 if pipeline_ready:
-    tabs += ["Predictions vs Actual", "Horizon Analysis", "Walk-Forward Metrics"]
+    tabs += ["Predictions vs Actual", "Horizon Analysis", "Walk-Forward Metrics", "Bias Analysis"]
 
 tab_objects = st.tabs(tabs)
 tab_raw = tab_objects[0]
@@ -296,6 +297,7 @@ if pipeline_ready:
     tab_pred = tab_objects[1]
     tab_horizon = tab_objects[2]
     tab_wf = tab_objects[3]
+    tab_bias = tab_objects[4]
 
     modelling   = load_modelling_table()
     predictions = load_predictions()
@@ -632,3 +634,155 @@ if pipeline_ready:
             st.divider()
             st.markdown("#### Monthly metrics table")
             st.dataframe(monthly, use_container_width=True)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # TAB 5 — Bias Analysis
+    # ──────────────────────────────────────────────────────────────────────
+
+    with tab_bias:
+        st.markdown("#### Systematic Bias Analysis (Month × Hour)")
+        st.caption(
+            "Where does the model consistently over- or underpredict? "
+            "Positive bias (red) = overprediction; negative (blue) = underprediction. "
+            "Only daytime cells with mean actual > 50 MW are shown."
+        )
+
+        bias_ready = BIAS_CSV.exists()
+
+        if bias_ready:
+            import numpy as np
+            import plotly.express as px
+
+            @st.cache_data
+            def load_bias():
+                return pd.read_csv(BIAS_CSV)
+
+            bias = load_bias()
+            valid = bias[bias["bias_pct"].notna()].copy()
+
+            # ── Heatmap: month × hour ────────────────────────────────
+            st.markdown("##### Bias heatmap (% of mean actual)")
+            pivot = valid.pivot(index="month", columns="hour", values="bias_pct")
+            month_labels = [
+                "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+            ]
+
+            heat_fig = go.Figure(data=go.Heatmap(
+                z=pivot.values,
+                x=pivot.columns.tolist(),
+                y=[month_labels[m - 1] for m in pivot.index],
+                colorscale="RdBu_r",
+                zmid=0,
+                colorbar=dict(title="Bias %"),
+                hovertemplate=(
+                    "Hour: %{x}<br>Month: %{y}<br>"
+                    "Bias: %{z:.1f}%<extra></extra>"
+                ),
+            ))
+            heat_fig.update_layout(
+                xaxis_title="Hour of day (UTC)",
+                yaxis_title="Month",
+                xaxis=dict(dtick=1),
+                height=420,
+                margin=dict(l=0, r=0, t=30, b=0),
+            )
+            st.plotly_chart(heat_fig, use_container_width=True)
+
+            # ── Bar chart: mean bias by hour ─────────────────────────
+            st.markdown("##### Mean bias by hour of day")
+            hourly_bias = (
+                valid.groupby("hour")
+                .agg(
+                    mean_bias_pct=("bias_pct", "mean"),
+                    mean_actual=("mean_actual", "mean"),
+                )
+                .reset_index()
+            )
+            colors_h = [
+                C_LGBM if v > 0 else C_BASELINE
+                for v in hourly_bias["mean_bias_pct"]
+            ]
+            hour_fig = go.Figure(go.Bar(
+                x=hourly_bias["hour"],
+                y=hourly_bias["mean_bias_pct"],
+                marker_color=colors_h,
+                hovertemplate=(
+                    "Hour %{x}: bias %{y:.1f}%<br>"
+                    "Mean actual: %{customdata:.0f} MW<extra></extra>"
+                ),
+                customdata=hourly_bias["mean_actual"],
+            ))
+            hour_fig.update_layout(
+                xaxis_title="Hour of day (UTC)",
+                yaxis_title="Mean bias (% of actual)",
+                height=340,
+                margin=dict(l=0, r=0, t=20, b=0),
+                xaxis=dict(dtick=1),
+            )
+            hour_fig.add_hline(y=0, line_dash="dash", line_color="gray")
+            st.plotly_chart(hour_fig, use_container_width=True)
+
+            # ── Bar chart: mean bias by month ────────────────────────
+            st.markdown("##### Mean bias by month")
+            monthly_bias = (
+                valid.groupby("month")
+                .agg(
+                    mean_bias_pct=("bias_pct", "mean"),
+                    mean_actual=("mean_actual", "mean"),
+                )
+                .reset_index()
+            )
+            colors_m = [
+                C_LGBM if v > 0 else C_BASELINE
+                for v in monthly_bias["mean_bias_pct"]
+            ]
+            month_fig = go.Figure(go.Bar(
+                x=[month_labels[m - 1] for m in monthly_bias["month"]],
+                y=monthly_bias["mean_bias_pct"],
+                marker_color=colors_m,
+                hovertemplate=(
+                    "%{x}: bias %{y:.1f}%<br>"
+                    "Mean actual: %{customdata:.0f} MW<extra></extra>"
+                ),
+                customdata=monthly_bias["mean_actual"],
+            ))
+            month_fig.update_layout(
+                xaxis_title="Month",
+                yaxis_title="Mean bias (% of actual)",
+                height=340,
+                margin=dict(l=0, r=0, t=20, b=0),
+            )
+            month_fig.add_hline(y=0, line_dash="dash", line_color="gray")
+            st.plotly_chart(month_fig, use_container_width=True)
+
+            # ── Worst cells table ────────────────────────────────────
+            st.divider()
+            st.markdown("#### Top 10 most biased (month, hour) cells")
+            worst = (
+                valid.assign(abs_bias=valid["bias_pct"].abs())
+                .nlargest(10, "abs_bias")
+                [["month", "hour", "bias_pct", "mean_error", "mean_actual", "mae", "count"]]
+                .reset_index(drop=True)
+            )
+            worst["month"] = worst["month"].map(
+                lambda m: month_labels[int(m) - 1]
+            )
+            worst.columns = [
+                "Month", "Hour", "Bias %", "Mean Error (MW)",
+                "Mean Actual (MW)", "MAE (MW)", "Samples",
+            ]
+            st.dataframe(
+                worst.style.format({
+                    "Bias %": "{:.1f}",
+                    "Mean Error (MW)": "{:.0f}",
+                    "Mean Actual (MW)": "{:.0f}",
+                    "MAE (MW)": "{:.0f}",
+                }),
+                use_container_width=True,
+            )
+        else:
+            st.info(
+                "Bias analysis CSV not found. Run `make evaluate` to generate "
+                "`output/bias_month_hour.csv`."
+            )
