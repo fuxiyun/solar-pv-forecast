@@ -40,6 +40,7 @@ from solar_pv_forecast.model.train import (
     predict_baseline,
     predict_lightgbm,
 )
+from solar_pv_forecast.proxy.build_proxy import fit_scaling_factor
 from solar_pv_forecast.model.tune import run_optuna
 from solar_pv_forecast.utils import log_step, setup_logger
 
@@ -120,6 +121,18 @@ def walk_forward_train_predict(
         logger.info(
             f"    train: {len(train):,}  val: {len(val):,}  test: {len(test_df):,}"
         )
+
+        # ── Refit proxy η on expanding training window ─────────
+        if "proxy_raw" in train.columns:
+            eta = fit_scaling_factor(
+                train["proxy_raw"].astype("float64"),
+                train[TARGET].astype("float64"),
+                pd.Series(True, index=train.index),
+            )
+            for part in (train, val, test_df):
+                part["proxy_solar_mw"] = (
+                    part["proxy_raw"].astype("float64") * eta
+                ).astype("float32")
 
         # ── Fit models ─────────────────────────────────────────
         bl_info = fit_baseline(train)
