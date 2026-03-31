@@ -15,6 +15,13 @@ full-run: install data proxy walk-forward evaluate dashboard
 	@echo "  Runtime log:  $(OUT_DIR)/runtime.log"
 	@echo "══════════════════════════════════════════════"
 
+only-run: proxy walk-forward evaluate dashboard
+	@echo "══════════════════════════════════════════════"
+	@echo "  Pipeline complete."
+	@echo "  Predictions:  $(OUT_DIR)/predictions.parquet"
+	@echo "  Runtime log:  $(OUT_DIR)/runtime.log"
+	@echo "══════════════════════════════════════════════"
+
 # ── Environment setup ───────────────────────────────────────────
 install:
 	uv sync
