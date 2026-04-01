@@ -32,6 +32,7 @@ from solar_pv_forecast.utils import log_step, setup_logger
 # Origin features: observed at time T (past only — NOT available for future)
 ORIGIN_FEATURES = [
     "proxy_solar_mw",
+    "national_capacity_mwp",
     "ghi_wm2_national",
     "temperature_2m_national",
     "wind_speed_10m_national",

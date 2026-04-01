@@ -19,12 +19,22 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from loguru import logger
+from sklearn.base import BaseEstimator, RegressorMixin
+from sklearn.inspection import permutation_importance
 
 from solar_pv_forecast.config import (
     FORECAST_STEP_MINUTES,
+    MODEL_DIR,
     OUTPUT_DIR,
     PROCESSED_DIR,
+    TRAIN_END_DATE,
 )
+from solar_pv_forecast.model.train import (
+    CANDIDATE_FEATURES,
+    TARGET,
+    build_multihorizon_data,
+)
+from solar_pv_forecast.model.features import engineer_features
 from solar_pv_forecast.utils import log_step, setup_logger
 
 
@@ -225,6 +235,256 @@ def plot_predictions_sample(df: pd.DataFrame, out_dir):
     logger.info(f"  Saved sample day plot → {out_dir / 'predictions_sample_day.png'}")
 
 
+# ── Bias analysis (month × hour) ─────────────────────────────
+def compute_bias_analysis(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute mean error (pred − actual) by month and hour.
+
+    Positive = overprediction, negative = underprediction.
+    Only includes daytime hours where mean actual > 50 MW.
+    """
+    df = df.copy()
+    df["hour"] = df["timestamp"].dt.hour
+    df["month"] = df["timestamp"].dt.month
+    df["error"] = df["pred_lightgbm"] - df["actual_solar_mw"]
+
+    bias = df.groupby(["month", "hour"]).agg(
+        mean_error=("error", "mean"),
+        mean_actual=("actual_solar_mw", "mean"),
+        mae=("error", lambda x: x.abs().mean()),
+        count=("error", "size"),
+    ).reset_index()
+
+    # Relative bias (% of mean actual) — only where generation is meaningful
+    bias["bias_pct"] = np.where(
+        bias["mean_actual"] > 50,
+        bias["mean_error"] / bias["mean_actual"] * 100,
+        np.nan,
+    )
+    return bias
+
+
+def plot_bias_heatmap(bias: pd.DataFrame, out_dir) -> None:
+    """Month × hour heatmap of systematic bias (% of mean actual)."""
+    pivot = bias.pivot(index="month", columns="hour", values="bias_pct")
+
+    fig, ax = plt.subplots(figsize=(14, 5))
+    vmax = max(abs(pivot.min().min()), abs(pivot.max().max()), 20)
+    im = ax.pcolormesh(
+        pivot.columns, pivot.index, pivot.values,
+        cmap="RdBu_r", vmin=-vmax, vmax=vmax, shading="auto",
+    )
+    cbar = fig.colorbar(im, ax=ax, label="Bias (% of mean actual)")
+    ax.set_xlabel("Hour of day (UTC)")
+    ax.set_ylabel("Month")
+    ax.set_yticks(range(1, 13))
+    ax.set_yticklabels([
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ])
+    ax.set_xticks(range(0, 24, 2))
+    ax.set_title("Systematic bias by month and hour (red = overprediction, blue = underprediction)")
+    plt.tight_layout()
+    fig.savefig(out_dir / "bias_month_hour.png", dpi=150)
+    plt.close()
+    logger.info(f"  Saved bias heatmap → {out_dir / 'bias_month_hour.png'}")
+
+
+def log_bias_extremes(bias: pd.DataFrame) -> None:
+    """Log the most biased month/hour combinations."""
+    valid = bias[bias["bias_pct"].notna()].copy()
+    valid["abs_bias_pct"] = valid["bias_pct"].abs()
+
+    worst = valid.nlargest(10, "abs_bias_pct")
+    logger.info("  Worst systematic biases (month, hour → bias %):")
+    for _, row in worst.iterrows():
+        direction = "over" if row["mean_error"] > 0 else "under"
+        logger.info(
+            f"    Month {int(row['month']):2d}, hour {int(row['hour']):2d}: "
+            f"{direction}predicts by {abs(row['bias_pct']):+.1f}% "
+            f"(mean actual: {row['mean_actual']:.0f} MW, n={int(row['count'])})"
+        )
+
+
+# ── Feature importance ────────────────────────────────────────
+def _load_model_and_features():
+    """Load saved LightGBM model and its feature list.
+
+    Uses the model's embedded feature names (authoritative) rather than
+    the separately saved JSON, which may be out of sync with the
+    multi-horizon column naming (target_ prefix).
+    """
+    import lightgbm as lgb
+
+    model = lgb.Booster(model_file=str(MODEL_DIR / "lightgbm_model.txt"))
+    features = model.feature_name()
+    return model, features
+
+
+def _build_validation_set(features: list[str]) -> pd.DataFrame:
+    """Reconstruct the validation set used during single-split training.
+
+    Renames multi-horizon columns to match the model's feature names
+    when a target_ prefix was added during build_multihorizon_data but
+    the model was trained with unprefixed names (or vice-versa).
+    """
+    df = pd.read_parquet(PROCESSED_DIR / "modelling_table.parquet")
+    df = engineer_features(df)
+    mh = build_multihorizon_data(df)
+
+    cutoff = pd.Timestamp(TRAIN_END_DATE)
+    all_train = mh[mh["origin_timestamp"] <= cutoff].copy()
+    all_train = all_train[all_train["timestamp"] <= cutoff]
+
+    val_start = cutoff - pd.DateOffset(months=1)
+    val = all_train[all_train["origin_timestamp"] >= val_start].copy()
+
+    # Align column names: if the model expects "clearsky_ghi" but the
+    # DataFrame has "target_clearsky_ghi", rename to match.
+    missing = [f for f in features if f not in val.columns]
+    rename_map = {}
+    for feat in missing:
+        prefixed = f"target_{feat}"
+        if prefixed in val.columns:
+            rename_map[prefixed] = feat
+    if rename_map:
+        val = val.rename(columns=rename_map)
+        logger.info(f"  Renamed {len(rename_map)} columns to match model feature names")
+
+    val = val.dropna(subset=[f for f in features if f in val.columns])
+    return val
+
+
+def analyse_native_importance(model, features: list[str]) -> list[dict]:
+    """Extract split-based feature importance from LightGBM model.
+
+    Returns list of {feature, importance} dicts sorted descending.
+    """
+    raw = model.feature_importance(importance_type="split")
+    ranked = sorted(
+        zip(features, raw.tolist()), key=lambda x: x[1], reverse=True
+    )
+    results = [{"feature": f, "importance": v} for f, v in ranked]
+
+    logger.info("  Native (split-based) feature importance — top 10:")
+    for i, entry in enumerate(results[:10], 1):
+        logger.info(f"    {i:2d}. {entry['feature']:35s} {entry['importance']:>8d}")
+
+    out_path = OUTPUT_DIR / "feature_importance_native.json"
+    with open(out_path, "w") as f:
+        json.dump(results, f, indent=2)
+    logger.info(f"  Saved → {out_path}")
+    return results
+
+
+class _BoosterWrapper(BaseEstimator, RegressorMixin):
+    """Wrap lgb.Booster so sklearn's permutation_importance accepts it."""
+
+    def __init__(self, booster=None):
+        self.booster = booster
+
+    def fit(self, X, y):
+        return self  # already trained
+
+    def predict(self, X):
+        return self.booster.predict(X)
+
+
+def analyse_permutation_importance(
+    model, features: list[str], val: pd.DataFrame,
+) -> list[dict]:
+    """Compute permutation importance on the validation set.
+
+    Uses neg_mean_absolute_error with 10 repeats.
+    Returns list of {feature, mean, std, ci95_low, ci95_high} dicts.
+    """
+    X_val = val[features]
+    y_val = val[TARGET]
+
+    logger.info(
+        f"  Running permutation importance on {len(val):,} validation rows "
+        f"(n_repeats=10)…"
+    )
+    wrapper = _BoosterWrapper(model)
+    perm_result = permutation_importance(
+        wrapper, X_val, y_val,
+        scoring="neg_mean_absolute_error",
+        n_repeats=10,
+        random_state=42,
+        n_jobs=-1,
+    )
+
+    entries = []
+    for i, feat in enumerate(features):
+        mean_imp = float(perm_result["importances_mean"][i])
+        std_imp = float(perm_result["importances_std"][i])
+        entries.append({
+            "feature": feat,
+            "mean": mean_imp,
+            "std": std_imp,
+            "ci95_low": float(mean_imp - 1.96 * std_imp),
+            "ci95_high": float(mean_imp + 1.96 * std_imp),
+        })
+    entries.sort(key=lambda x: x["mean"], reverse=True)
+
+    logger.info("  Permutation importance (validation set) — top 10:")
+    for i, e in enumerate(entries[:10], 1):
+        ci_note = " *" if e["ci95_low"] <= 0 else ""
+        logger.info(
+            f"    {i:2d}. {e['feature']:35s} "
+            f"mean={e['mean']:>10.1f}  ±{e['std']:.1f}{ci_note}"
+        )
+
+    # Flag features with 95% CI including zero
+    zero_ci = [e["feature"] for e in entries if e["ci95_low"] <= 0]
+    if zero_ci:
+        logger.info(
+            f"  Features with 95% CI including 0 (candidates for removal): "
+            f"{', '.join(zero_ci)}"
+        )
+
+    out_path = OUTPUT_DIR / "feature_importance_permutation.json"
+    with open(out_path, "w") as f:
+        json.dump(entries, f, indent=2)
+    logger.info(f"  Saved → {out_path}")
+    return entries
+
+
+def plot_importance_comparison(
+    native: list[dict], perm: list[dict], out_dir,
+) -> None:
+    """Side-by-side horizontal bar chart of native vs permutation importance."""
+    n_features = min(15, len(native))
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Native
+    feats_n = [e["feature"] for e in native[:n_features]]
+    vals_n = [e["importance"] for e in native[:n_features]]
+    ax1.barh(range(len(feats_n)), vals_n, color="#3B8BD4", alpha=0.8)
+    ax1.set_yticks(range(len(feats_n)))
+    ax1.set_yticklabels(feats_n, fontsize=8)
+    ax1.invert_yaxis()
+    ax1.set_xlabel("Split count")
+    ax1.set_title("Native (split-based)")
+
+    # Permutation
+    feats_p = [e["feature"] for e in perm[:n_features]]
+    vals_p = [e["mean"] for e in perm[:n_features]]
+    stds_p = [e["std"] for e in perm[:n_features]]
+    ax2.barh(range(len(feats_p)), vals_p, xerr=stds_p,
+             color="#D85A30", alpha=0.8, capsize=3)
+    ax2.set_yticks(range(len(feats_p)))
+    ax2.set_yticklabels(feats_p, fontsize=8)
+    ax2.invert_yaxis()
+    ax2.set_xlabel("Mean MAE increase")
+    ax2.set_title("Permutation (validation set)")
+
+    plt.tight_layout()
+    fig.savefig(out_dir / "feature_importance_comparison.png", dpi=150)
+    plt.close()
+    logger.info(f"  Saved comparison plot → {out_dir / 'feature_importance_comparison.png'}")
+
+
 # ── Main ───────────────────────────────────────────────────────
 def main():
     setup_logger()
@@ -294,6 +554,19 @@ def main():
     with log_step("Compute time-of-day metrics"):
         tod = compute_tod_metrics(df)
         tod.to_csv(OUTPUT_DIR / "tod_metrics.csv", index=False)
+
+    with log_step("Bias analysis (month × hour)"):
+        bias = compute_bias_analysis(df)
+        bias.to_csv(OUTPUT_DIR / "bias_month_hour.csv", index=False)
+        plot_bias_heatmap(bias, OUTPUT_DIR)
+        log_bias_extremes(bias)
+
+    with log_step("Feature importance analysis"):
+        model, features = _load_model_and_features()
+        native = analyse_native_importance(model, features)
+        val = _build_validation_set(features)
+        perm = analyse_permutation_importance(model, features, val)
+        plot_importance_comparison(native, perm, OUTPUT_DIR)
 
     with log_step("Generate plots"):
         plot_monthly_nmae_trend(monthly, OUTPUT_DIR)

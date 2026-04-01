@@ -55,17 +55,57 @@ def interpolate_weather_to_15min(weather: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
+def _load_monthly_weights() -> pd.DataFrame | None:
+    """Load time-varying monthly capacity weights if available."""
+    from solar_pv_forecast.config import RAW_DIR as _RAW
+    path = _RAW / "pv_capacity_monthly.parquet"
+    if not path.exists():
+        return None
+    df = pd.read_parquet(path)
+    # Recompute weights per month (in case national totals differ)
+    monthly_totals = df.groupby("month")["capacity_mwp"].sum()
+    df = df.merge(
+        monthly_totals.rename("month_total"), on="month", how="left",
+    )
+    df["weight"] = df["capacity_mwp"] / df["month_total"]
+    return df[["month", "state", "weight"]].copy()
+
+
 def build_weighted_national_weather(
     weather_15m: pd.DataFrame,
     capacity: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Compute capacity-weighted national averages of weather variables."""
-    # Merge capacity weights
-    merged = weather_15m.merge(
-        capacity[["state", "weight"]],
-        on="state",
-        how="left",
-    )
+    """Compute capacity-weighted national averages of weather variables.
+
+    Uses time-varying monthly weights if pv_capacity_monthly.parquet
+    exists, otherwise falls back to static weights.
+    """
+    monthly_weights = _load_monthly_weights()
+
+    if monthly_weights is not None:
+        # Add month key to weather for join
+        weather = weather_15m.copy()
+        weather["_month"] = weather["timestamp"].dt.to_period("M").astype(str)
+        merged = weather.merge(
+            monthly_weights.rename(columns={"month": "_month"}),
+            on=["_month", "state"],
+            how="left",
+        )
+        # Fill any months outside the monthly table with static weights
+        if merged["weight"].isna().any():
+            static = capacity.set_index("state")["weight"]
+            for idx in merged.index[merged["weight"].isna()]:
+                state = merged.loc[idx, "state"]
+                if state in static.index:
+                    merged.loc[idx, "weight"] = static[state]
+        logger.info("  Using time-varying monthly capacity weights")
+    else:
+        merged = weather_15m.merge(
+            capacity[["state", "weight"]],
+            on="state",
+            how="left",
+        )
+        logger.info("  Using static capacity weights (no monthly data)")
 
     # Weighted average per timestamp
     weather_vars = ["ghi_wm2", "temperature_2m", "wind_speed_10m"]
@@ -101,13 +141,30 @@ def build_weighted_national_nwp(
     """Compute capacity-weighted national averages of NWP forecast variables.
 
     NWP data is already at 15-min resolution (ICON-D2 native), so no
-    interpolation is needed.
+    interpolation is needed.  Uses monthly weights if available.
     """
-    merged = nwp_15m.merge(
-        capacity[["state", "weight"]],
-        on="state",
-        how="left",
-    )
+    monthly_weights = _load_monthly_weights()
+
+    if monthly_weights is not None:
+        nwp = nwp_15m.copy()
+        nwp["_month"] = nwp["timestamp"].dt.to_period("M").astype(str)
+        merged = nwp.merge(
+            monthly_weights.rename(columns={"month": "_month"}),
+            on=["_month", "state"],
+            how="left",
+        )
+        if merged["weight"].isna().any():
+            static = capacity.set_index("state")["weight"]
+            for idx in merged.index[merged["weight"].isna()]:
+                state = merged.loc[idx, "state"]
+                if state in static.index:
+                    merged.loc[idx, "weight"] = static[state]
+    else:
+        merged = nwp_15m.merge(
+            capacity[["state", "weight"]],
+            on="state",
+            how="left",
+        )
 
     nwp_vars = ["nwp_ghi_wm2", "nwp_temperature_2m", "nwp_cloud_cover"]
     nwp_vars = [v for v in nwp_vars if v in merged.columns]

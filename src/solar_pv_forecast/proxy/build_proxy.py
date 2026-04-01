@@ -1,8 +1,12 @@
 """Build the synthetic national PV proxy from weather + capacity weights.
 
-The proxy is: P_syn_t = η × Σ_i (GHI_i,t × w_i)
+The proxy is: P_syn_t = η_m × C_m × Σ_i (GHI_i,t × w_i)
 where w_i is the normalised capacity weight for state i,
-and η is fitted via OLS on the training set.
+C_m is the national capacity for month m (time-varying),
+and η_m is fitted via OLS on the training set.
+
+When monthly capacity data is available, the proxy accounts for
+Germany's rapid PV expansion (~83 GWp Jan 2024 → ~117 GWp Dec 2025).
 
 Run:  python -m solar_pv_forecast.proxy.build_proxy
 """
@@ -14,29 +18,76 @@ from sklearn.linear_model import LinearRegression
 
 from solar_pv_forecast.config import (
     PV_CAPACITY_MWP,
+    PV_MONTHLY_CAPACITY_MWP_FALLBACK,
+    PV_STATE_WEIGHTS,
     PROCESSED_DIR,
+    RAW_DIR,
     TRAIN_END_DATE,
 )
 from solar_pv_forecast.utils import log_step, setup_logger
 
 
-def compute_raw_proxy(df: pd.DataFrame) -> pd.Series:
-    """Compute the raw capacity-weighted GHI sum (before scaling).
+def _load_monthly_national_capacity(df: pd.DataFrame) -> pd.Series:
+    """Return a Series indexed like df with monthly national capacity (MWp).
 
-    Looks for columns named ghi_<state> in the dataframe and applies
-    capacity weights to produce a single national proxy series.
+    Uses pv_capacity_monthly.parquet if available, else fallback constants.
     """
-    total_cap = sum(PV_CAPACITY_MWP.values())
-    proxy = pd.Series(0.0, index=df.index, dtype="float64")
+    path = RAW_DIR / "pv_capacity_monthly.parquet"
+    if path.exists():
+        monthly = pd.read_parquet(path)
+        # Get national total per month (one row per month)
+        nat = (
+            monthly.groupby("month")["national_total_mwp"]
+            .first()
+            .to_dict()
+        )
+        logger.info(f"  Loaded time-varying capacity ({len(nat)} months)")
+    else:
+        nat = {k: float(v) for k, v in PV_MONTHLY_CAPACITY_MWP_FALLBACK.items()}
+        logger.info("  Using fallback monthly capacity values")
 
-    for state, cap in PV_CAPACITY_MWP.items():
+    # Map each row's month to its national capacity
+    ym = df["timestamp"].dt.to_period("M").astype(str)
+    cap_series = ym.map(nat)
+
+    # Fill any unmapped months with the nearest available value
+    if cap_series.isna().any():
+        fallback_val = float(np.median(list(nat.values())))
+        n_missing = cap_series.isna().sum()
+        logger.warning(
+            f"  {n_missing} rows have no monthly capacity, "
+            f"using median ({fallback_val:.0f} MWp)"
+        )
+        cap_series = cap_series.fillna(fallback_val)
+
+    return cap_series.astype("float64")
+
+
+def compute_raw_proxy(df: pd.DataFrame) -> pd.Series:
+    """Compute the raw capacity-weighted GHI sum (before η scaling).
+
+    Uses static state-level weights (distribution is stable) but
+    scales by time-varying national capacity so the proxy tracks
+    capacity growth.
+
+    proxy_raw_t = C_national_m(t) × Σ_i (GHI_i,t × w_i)
+
+    This has units of MWp × W/m², which η then converts to MW.
+    """
+    # Weighted-average GHI (using static state weights)
+    ghi_weighted = pd.Series(0.0, index=df.index, dtype="float64")
+    for state, w in PV_STATE_WEIGHTS.items():
         col = f"ghi_{state}"
         if col in df.columns:
-            proxy += df[col].astype("float64") * (cap / total_cap)
+            ghi_weighted += df[col].astype("float64") * w
         else:
             logger.warning(f"  Missing column {col}, skipping state.")
 
-    return proxy
+    # Scale by monthly national capacity
+    monthly_cap = _load_monthly_national_capacity(df)
+    proxy_raw = ghi_weighted * monthly_cap
+
+    return proxy_raw
 
 
 def fit_scaling_factor(
@@ -79,6 +130,11 @@ def main():
 
         # Apply scaling
         df["proxy_solar_mw"] = (proxy_raw * eta).astype("float32")
+
+        # Add national capacity as a feature (for the model to learn
+        # the capacity → generation scaling directly)
+        monthly_cap = _load_monthly_national_capacity(df)
+        df["national_capacity_mwp"] = monthly_cap.astype("float32")
 
         # Diagnostics
         daytime = df["actual_solar_mw"] > 0

@@ -60,9 +60,14 @@ NWP_VARIABLES_15MIN = [
     "cloud_cover",
 ]
 
-# ── PV capacity by Bundesland (MWp, approximate 2024 values) ───
-# Source: Bundesnetzagentur / OPSD. Will be updated from live data
-# if available; these serve as fallback.
+# ── Fraunhofer Energy-Charts API (monthly installed capacity) ──
+ENERGY_CHARTS_API_URL = "https://api.energy-charts.info/installed_power"
+
+# ── PV capacity by Bundesland (MWp, mid-2024 snapshot) ────────
+# Source: Bundesnetzagentur / OPSD.  Used as fallback and as the
+# STATE DISTRIBUTION template.  National totals come from the
+# Energy-Charts monthly time series; per-state values are derived
+# by scaling this distribution proportionally.
 PV_CAPACITY_MWP = {
     "Bayern":                   21_800,
     "Baden-Württemberg":        10_200,
@@ -80,6 +85,41 @@ PV_CAPACITY_MWP = {
     "Berlin":                      300,
     "Hamburg":                     200,
     "Bremen":                      100,
+}
+
+# State-level distribution weights (stable over time — new capacity
+# is distributed roughly in proportion to existing stock).
+_TOTAL_STATIC = sum(PV_CAPACITY_MWP.values())
+PV_STATE_WEIGHTS = {s: c / _TOTAL_STATIC for s, c in PV_CAPACITY_MWP.items()}
+
+# ── Monthly national PV capacity fallback (MWp) ──────────────
+# Source: BNetzA EE-Statistik / Fraunhofer ISE Energy-Charts.
+# Used when the API is unreachable.
+PV_MONTHLY_CAPACITY_MWP_FALLBACK = {
+    "2024-01":  83_100,
+    "2024-02":  84_200,
+    "2024-03":  85_500,
+    "2024-04":  87_000,
+    "2024-05":  88_600,
+    "2024-06":  90_200,
+    "2024-07":  91_700,
+    "2024-08":  93_100,
+    "2024-09":  94_500,
+    "2024-10":  95_800,
+    "2024-11":  97_100,
+    "2024-12":  99_300,
+    "2025-01": 100_700,
+    "2025-02": 101_900,
+    "2025-03": 103_400,
+    "2025-04": 105_100,
+    "2025-05": 106_900,
+    "2025-06": 108_800,
+    "2025-07": 110_300,
+    "2025-08": 111_800,
+    "2025-09": 113_200,
+    "2025-10": 114_500,
+    "2025-11": 115_700,
+    "2025-12": 116_800,
 }
 
 # ── Forecast configuration ──────────────────────────────────────

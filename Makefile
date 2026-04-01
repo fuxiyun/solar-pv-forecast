@@ -1,4 +1,4 @@
-.PHONY: full-run install data proxy train walk-forward evaluate dashboard report clean help
+.PHONY: full-run install data proxy train walk-forward evaluate dashboard report test test-quick test-leakage clean help
 
 # ── Configuration ───────────────────────────────────────────────
 PYTHON   := python
@@ -9,6 +9,13 @@ OUT_DIR  := output
 # Main entry point: run entire pipeline end-to-end
 # ══════════════════════════════════════════════════════════════════
 full-run: install data proxy walk-forward evaluate dashboard
+	@echo "══════════════════════════════════════════════"
+	@echo "  Pipeline complete."
+	@echo "  Predictions:  $(OUT_DIR)/predictions.parquet"
+	@echo "  Runtime log:  $(OUT_DIR)/runtime.log"
+	@echo "══════════════════════════════════════════════"
+
+only-run: proxy walk-forward evaluate dashboard
 	@echo "══════════════════════════════════════════════"
 	@echo "  Pipeline complete."
 	@echo "  Predictions:  $(OUT_DIR)/predictions.parquet"
@@ -65,6 +72,16 @@ report:
 	cd report && pdflatex -interaction=nonstopmode technical_note.tex \
 		&& pdflatex -interaction=nonstopmode technical_note.tex
 	@echo "[✓] Report compiled: report/technical_note.pdf"
+
+# ── Testing ─────────────────────────────────────────────────────
+test:
+	$(PYTHON) -m pytest tests/ -v --tb=short
+
+test-quick:
+	$(PYTHON) -m pytest tests/test_leakage.py tests/test_features.py -v --tb=short
+
+test-leakage:
+	$(PYTHON) -m pytest tests/test_leakage.py -v --tb=short
 
 # ── Utilities ───────────────────────────────────────────────────
 clean:
